@@ -1,8 +1,10 @@
 // ==UserScript==
 // @name         Risu SSE Tap
 // @namespace    xCross
-// @version      2.2.0
+// @version      2.2.1
 // @description  스트리밍 요청 모니터. PocketRisu /proxy2 대응, Responses API 파싱, 대용량 응답 렌더 최적화
+// @updateURL    https://raw.githubusercontent.com/xCrossss/Risu-SSE-Tap/main/risu_sse_tap.js
+// @downloadURL  https://raw.githubusercontent.com/xCrossss/Risu-SSE-Tap/main/risu_sse_tap.js
 // @match        https://vnic-pocketrisu.tail8bc2d0.ts.net/*
 // @match        https://*.trycloudflare.com/*
 // @match        http://localhost:6001/*
