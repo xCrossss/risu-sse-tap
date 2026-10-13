@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Risu SSE Tap
 // @namespace    xCross
-// @version      2.1.3
+// @version      2.2.0
 // @description  스트리밍 요청 모니터. PocketRisu /proxy2 대응, Responses API 파싱, 대용량 응답 렌더 최적화
 // @match        https://vnic-pocketrisu.tail8bc2d0.ts.net/*
 // @match        https://*.trycloudflare.com/*
@@ -122,8 +122,11 @@
     hdrEl.style.cssText = 'padding:8px 8px 0;white-space:pre-wrap;overflow-wrap:anywhere;color:#8f8';
     var bodyEl = document.createElement('div');
     bodyEl.style.cssText = 'padding:8px;white-space:pre-wrap;overflow-wrap:anywhere';
+    var sumEl = document.createElement('div');
+    sumEl.style.cssText = 'padding:0 8px 8px;white-space:pre-wrap;overflow-wrap:anywhere;color:#8f8;display:none';
     dt.appendChild(hdrEl);
     dt.appendChild(bodyEl);
+    dt.appendChild(sumEl);
     hdrEl.textContent = '';
     bodyEl.textContent = 'Select a request...';
     dw.appendChild(dt);
@@ -271,6 +274,83 @@
             }
         });
         return m;
+    }
+
+    function pick() {
+        for (var i = 0; i < arguments.length; i++) if (arguments[i] !== undefined && arguments[i] !== null) return arguments[i];
+    }
+
+    // 맨 아래 요약용 모델/토큰/비용. 스트림에 여러 번 실려 오면 뒤에 온 값이 이긴다.
+    function summaryOf(events) {
+        var s = {};
+        function num(k, v) { if (typeof v === 'number' && isFinite(v)) s[k] = v; }
+        function str(k, v) { if (typeof v === 'string' && v) s[k] = v; }
+        (events || []).forEach(function (d) {
+            if (!d) return;
+            if (d.data && d.data.CompletionChunk) d = d.data.CompletionChunk;
+            else if (d.data && d.data.choices) d = d.data;
+            var md = d.metadata && typeof d.metadata === 'object' ? d.metadata : {};
+            var msg = d.response && typeof d.response === 'object' ? d.response
+                : (d.message && typeof d.message === 'object' ? d.message : {});
+            str('model', pick(d.model, d.modelVersion, msg.model));
+            str('model', md.used_model);       // LLM Gateway: 실제로 라우팅된 모델
+            str('provider', d.provider);       // OpenRouter
+            str('provider', md.used_provider); // LLM Gateway
+            var u = d.usage || msg.usage || d.usageMetadata || md.usage;
+            if (!u || typeof u !== 'object') return;
+            if (u.promptTokenCount !== undefined) { // Gemini: 출력 = 본문 + thinking
+                num('in', u.promptTokenCount);
+                num('out', (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0));
+                num('reason', u.thoughtsTokenCount);
+                num('cached', u.cachedContentTokenCount);
+                num('total', u.totalTokenCount);
+                return;
+            }
+            var ind = u.prompt_tokens_details || u.input_tokens_details || {};
+            var outd = u.completion_tokens_details || u.output_tokens_details || {};
+            // Anthropic의 input_tokens는 캐시 읽기/쓰기분이 빠진 값이라 더해야 실제 입력이 된다.
+            // shortcut: Bedrock(inputTokens)은 캐시분을 따로 더하지 않음, Bedrock 캐시를 쓰게 되면 같은 처리 추가
+            var anth = u.prompt_tokens === undefined && (u.cache_read_input_tokens !== undefined || u.cache_creation_input_tokens !== undefined);
+            num('in', anth ? (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0)
+                : pick(u.prompt_tokens, u.input_tokens, u.inputTokens));
+            num('cached', pick(ind.cached_tokens, anth ? u.cache_read_input_tokens : undefined));
+            num('out', pick(u.completion_tokens, u.output_tokens, u.outputTokens));
+            num('reason', pick(outd.reasoning_tokens, u.reasoning_tokens));
+            num('total', pick(u.total_tokens, u.totalTokens));
+            var cd = u.cost_details || {};
+            num('cost', u.cost);
+            num('costIn', pick(cd.input_cost, cd.upstream_inference_prompt_cost));
+            num('costOut', pick(cd.output_cost, cd.upstream_inference_completions_cost));
+        });
+        return s;
+    }
+
+    // 라벨이 전부 ASCII라 고정폭 글꼴에서 패딩만으로 열이 맞는다.
+    function sumText(s, reqModel) {
+        var model = String(s.model || reqModel || ''), prov = s.provider || '';
+        if (prov && model.indexOf(prov + '/') === 0) model = model.slice(prov.length + 1);
+        model = prov && model ? prov + ' / ' + model : (model || prov);
+        var tok = function (v) { return v === undefined ? undefined : v.toLocaleString('en-US'); };
+        var usd = function (v) { return v === undefined ? undefined : '$' + v.toFixed(6); };
+        var total = s.total !== undefined ? s.total : (s.in !== undefined && s.out !== undefined ? s.in + s.out : undefined);
+        var rows = [
+            ['Tokens', 'in', tok(s.in)],
+            ['Tokens', '  cached', s.cached ? tok(s.cached) : undefined],
+            ['Tokens', 'out', tok(s.out)],
+            ['Tokens', '  reasoning', s.reason ? tok(s.reason) : undefined],
+            ['Tokens', 'total', tok(total)],
+            ['Cost', 'in', usd(s.costIn)],
+            ['Cost', 'out', usd(s.costOut)],
+            ['Cost', 'total', usd(s.cost)]
+        ].filter(function (x) { return x[2] !== undefined; });
+        if (!model && !rows.length) return '';
+        var w1 = 0, w2 = 0;
+        rows.forEach(function (x) { w1 = Math.max(w1, x[1].length); w2 = Math.max(w2, x[2].length); });
+        var out = '--- Summary ---' + (model ? '\nModel   ' + model : '');
+        rows.forEach(function (x, i) {
+            out += '\n' + (i && rows[i - 1][0] === x[0] ? '' : x[0]).padEnd(8) + x[1].padEnd(w1) + '  ' + x[2].padStart(w2);
+        });
+        return out;
     }
 
     function mergeMeta(a, b) {
@@ -569,7 +649,7 @@
                 return multi ? LABEL[s.kind] + '\n' + t : t;
             }).join('\n\n');
         }
-        return { text: text, status: status, events: events };
+        return { text: text, status: status, events: events, sum: summaryOf(events) };
     }
     // ══════════════════════════════════════════════════════════════════════
     // PARSER-END
@@ -669,13 +749,16 @@
 
     function rd(force) {
         var r = R.find(function (x) { return x.id === S; });
-        if (!r) { hdrEl.textContent = ''; bodyEl.textContent = 'Select a request...'; jb.style.display = 'none'; return; }
+        if (!r) { hdrEl.textContent = ''; bodyEl.textContent = 'Select a request...'; sumEl.style.display = 'none'; jb.style.display = 'none'; return; }
         var stick = force || atB();
         var h = headerText(r);
         if (hdrEl.textContent !== h) hdrEl.textContent = h;
         var b = viewBody(r);
         // 동일 문자열이면 DOM을 건드리지 않는다 (레이아웃 재계산 회피)
         if (bodyEl.__v !== b) { bodyEl.textContent = b; bodyEl.__v = b; }
+        var sm = sumText(parsedOf(r).sum, r.qm && r.qm.model);
+        if (sumEl.textContent !== sm) sumEl.textContent = sm;
+        sumEl.style.display = sm ? 'block' : 'none';
         if (stick) dt.scrollTop = dt.scrollHeight;
         jb.style.display = atB() ? 'none' : 'block';
     }
