@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Risu SSE Tap
 // @namespace    xCross
-// @version      2.2.4
+// @version      2.2.5
 // @description  스트리밍 요청 모니터. PocketRisu /proxy2 대응, Responses API 파싱, 대용량 응답 렌더 최적화
 // @copyright    2026, xCross
 // @license      CC-BY-NC-SA-4.0
@@ -265,16 +265,6 @@
                 if (s.model !== undefined && !m.model) m.model = s.model;
                 if (s.service_tier !== undefined && !m.service_tier) m.service_tier = s.service_tier;
                 if (s.serviceTier !== undefined && !m.service_tier) m.service_tier = s.serviceTier;
-                if (s.usage && !m.usage) {
-                    var u = s.usage;
-                    var inTok = u.input_tokens !== undefined ? u.input_tokens : u.prompt_tokens;
-                    var outTok = u.output_tokens !== undefined ? u.output_tokens : u.completion_tokens;
-                    if (inTok !== undefined || outTok !== undefined) {
-                        m.usage = 'in=' + (inTok === undefined ? '?' : inTok) + ', out=' + (outTok === undefined ? '?' : outTok);
-                        var det = u.output_tokens_details || u.completion_tokens_details;
-                        if (det && det.reasoning_tokens !== undefined) m.usage += ', reasoning=' + det.reasoning_tokens;
-                    }
-                }
             }
         });
         return m;
@@ -364,8 +354,7 @@
         ['reasoning_effort', 'Reasoning effort'],
         ['reasoning_summary', 'Reasoning summary'],
         ['verbosity', 'Verbosity'],
-        ['thinking', 'Thinking'],
-        ['usage', 'Usage']
+        ['thinking', 'Thinking']
     ];
     function metaLines(m) {
         var s = '';
