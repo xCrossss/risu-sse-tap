@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Risu SSE Tap
 // @namespace    xCross
-// @version      2.2.3
+// @version      2.2.4
 // @description  스트리밍 요청 모니터. PocketRisu /proxy2 대응, Responses API 파싱, 대용량 응답 렌더 최적화
 // @copyright    2026, xCross
 // @license      CC-BY-NC-SA-4.0
@@ -127,7 +127,7 @@
     var bodyEl = document.createElement('div');
     bodyEl.style.cssText = 'padding:8px;white-space:pre-wrap;overflow-wrap:anywhere';
     var sumEl = document.createElement('div');
-    sumEl.style.cssText = 'padding:0 8px 8px;white-space:pre-wrap;overflow-wrap:anywhere;color:#8f8;display:none';
+    sumEl.style.cssText = 'padding:0 8px 8px;color:#8f8;display:none';
     dt.appendChild(hdrEl);
     dt.appendChild(bodyEl);
     dt.appendChild(sumEl);
@@ -329,8 +329,8 @@
         return s;
     }
 
-    // 라벨이 전부 ASCII라 고정폭 글꼴에서 패딩만으로 열이 맞는다.
-    function sumText(s, reqModel) {
+    // { model, rows: [[그룹, 항목, 값, 하위항목]] }. 열 맞춤은 renderSum의 grid가 한다.
+    function sumRows(s, reqModel) {
         var model = String(s.model || reqModel || ''), prov = s.provider || '';
         if (prov && model.indexOf(prov + '/') === 0) model = model.slice(prov.length + 1);
         model = prov && model ? prov + ' / ' + model : (model || prov);
@@ -339,22 +339,15 @@
         var total = s.total !== undefined ? s.total : (s.in !== undefined && s.out !== undefined ? s.in + s.out : undefined);
         var rows = [
             ['Tokens', 'in', tok(s.in)],
-            ['Tokens', '  cached', s.cached ? tok(s.cached) : undefined],
+            ['Tokens', 'cached', s.cached ? tok(s.cached) : undefined, 1],
             ['Tokens', 'out', tok(s.out)],
-            ['Tokens', '  reasoning', s.reason ? tok(s.reason) : undefined],
+            ['Tokens', 'reasoning', s.reason ? tok(s.reason) : undefined, 1],
             ['Tokens', 'total', tok(total)],
             ['Cost', 'in', usd(s.costIn)],
             ['Cost', 'out', usd(s.costOut)],
             ['Cost', 'total', usd(s.cost)]
         ].filter(function (x) { return x[2] !== undefined; });
-        if (!model && !rows.length) return '';
-        var w1 = 0, w2 = 0;
-        rows.forEach(function (x) { w1 = Math.max(w1, x[1].length); w2 = Math.max(w2, x[2].length); });
-        var out = '--- Summary ---' + (model ? '\nModel   ' + model : '');
-        rows.forEach(function (x, i) {
-            out += '\n' + (i && rows[i - 1][0] === x[0] ? '' : x[0]).padEnd(8) + x[1].padEnd(w1) + '  ' + x[2].padStart(w2);
-        });
-        return out;
+        return model || rows.length ? { model: model, rows: rows } : null;
     }
 
     function mergeMeta(a, b) {
@@ -751,18 +744,50 @@
         return cut + body + (status ? '\n\n[status: ' + status + ']' : '');
     }
 
+    // 페이지 CSS 때문에 패널이 고정폭 글꼴이 아닐 수 있어서, 공백 대신 grid로 열을 맞춘다.
+    // 모델 줄과 숫자 표는 따로 grid지만 첫 열 너비(4.5em)와 간격을 같게 둬서 세로선이 맞는다.
+    function renderSum(d) {
+        var k = d ? JSON.stringify(d) : '';
+        if (sumEl.__v === k) return;
+        sumEl.__v = k;
+        sumEl.textContent = '';
+        sumEl.style.display = d ? 'block' : 'none';
+        if (!d) return;
+        function cell(parent, text, css) {
+            var e = document.createElement('div');
+            e.textContent = text;
+            e.style.cssText = css || '';
+            parent.appendChild(e);
+            return e;
+        }
+        var GRID = 'display:grid;column-gap:12px;row-gap:2px;margin-top:4px;grid-template-columns:4.5em ';
+        cell(sumEl, '--- Summary ---');
+        if (d.model) {
+            var mr = cell(sumEl, '', GRID + 'minmax(0,1fr)');
+            cell(mr, 'Model');
+            cell(mr, d.model, 'color:#0f0;overflow-wrap:anywhere');
+        }
+        if (!d.rows.length) return;
+        var g = cell(sumEl, '', GRID + 'max-content max-content;font-variant-numeric:tabular-nums');
+        d.rows.forEach(function (x, i) {
+            var first = !i || d.rows[i - 1][0] !== x[0];
+            var gap = first && i ? 'margin-top:6px;' : '';
+            cell(g, first ? x[0] : '', gap);
+            cell(g, x[1], gap + (x[3] ? 'padding-left:1em;color:#888' : ''));
+            cell(g, x[2], gap + 'text-align:right;color:#0f0' + (x[1] === 'total' ? ';font-weight:bold' : ''));
+        });
+    }
+
     function rd(force) {
         var r = R.find(function (x) { return x.id === S; });
-        if (!r) { hdrEl.textContent = ''; bodyEl.textContent = 'Select a request...'; sumEl.style.display = 'none'; jb.style.display = 'none'; return; }
+        if (!r) { hdrEl.textContent = ''; bodyEl.textContent = 'Select a request...'; renderSum(null); jb.style.display = 'none'; return; }
         var stick = force || atB();
         var h = headerText(r);
         if (hdrEl.textContent !== h) hdrEl.textContent = h;
         var b = viewBody(r);
         // 동일 문자열이면 DOM을 건드리지 않는다 (레이아웃 재계산 회피)
         if (bodyEl.__v !== b) { bodyEl.textContent = b; bodyEl.__v = b; }
-        var sm = sumText(parsedOf(r).sum, r.qm && r.qm.model);
-        if (sumEl.textContent !== sm) sumEl.textContent = sm;
-        sumEl.style.display = sm ? 'block' : 'none';
+        renderSum(sumRows(parsedOf(r).sum, r.qm && r.qm.model));
         if (stick) dt.scrollTop = dt.scrollHeight;
         jb.style.display = atB() ? 'none' : 'block';
     }
